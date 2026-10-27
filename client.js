@@ -105,6 +105,38 @@ window.__ModuleLoader__.load({
     const MIN_QUERY = 2
     const MAX_QUERY = 64
 
+    /** npm 包名格式（含 scoped），用来判断用户是不是直接敲了完整包名。 */
+    const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i
+
+    /**
+     * 按完整包名精确查一次 `/<name>/latest`。
+     *
+     * npm 搜索按「整词匹配 + 相关性排序」，输入 `qubitclient-dsh-panel` 这种三词包名时，
+     * dsh / panel 这些常见词会把别的包顶到前面，目标包被挤出前 30 条 —— 看起来就是
+     * 「搜完整包名反而搜不到」。所以完整包名必须直接打 registry。
+     */
+    async function fetchExactPackage(name, signal) {
+      if (!PACKAGE_NAME_RE.test(name)) return null
+      try {
+        const encoded = name.replace('/', '%2f')
+        const data = await fetchJson(`${REGISTRY}/${encoded}/latest`, signal)
+        if (!data || typeof data.name !== 'string') return null
+        const maintainer = Array.isArray(data.maintainers) ? data.maintainers[0] : null
+        return {
+          name: data.name,
+          version: typeof data.version === 'string' ? data.version : '',
+          description: typeof data.description === 'string' ? data.description : '',
+          date: '',
+          keywords: Array.isArray(data.keywords) ? data.keywords.map(String) : [],
+          publisher: typeof maintainer?.name === 'string' ? maintainer.name : '',
+          score: 0,
+          npmUrl: `https://www.npmjs.com/package/${data.name}`,
+        }
+      } catch (_error) {
+        return null
+      }
+    }
+
     /**
      * 检索 npm 上的 DSH 插件。返回的 `mode` 决定列表上方的说明：
      *   browse —— 空查询，浏览关键词 dsh-plugin（分页）
@@ -126,12 +158,13 @@ window.__ModuleLoader__.load({
         return { total: page.total, items: rankItems(page.items, ''), mode: 'browse' }
       }
 
-      const [plain, scoped] = await Promise.all([
+      const [plain, scoped, exact] = await Promise.all([
         fetchSearch(query, FULLTEXT_SIZE, 0, signal),
         fetchSearch(`keywords:${DSH_KEYWORD} ${query}`, PAGE_SIZE, 0, signal).catch(() => ({
           total: 0,
           items: [],
         })),
+        fetchExactPackage(query, signal).catch(() => null),
       ])
 
       const needle = query.toLowerCase()
@@ -140,26 +173,36 @@ window.__ModuleLoader__.load({
         item.keywords.includes('deepseek-harness') ||
         item.name.toLowerCase().includes('dsh')
 
+      /** 精确命中的包永远排第一，其余去重后按相关性排。 */
+      const compose = (base) => {
+        const merged = []
+        const seen = new Set()
+        if (exact) {
+          seen.add(exact.name)
+          merged.push(exact)
+        }
+        for (const item of base) {
+          if (!seen.has(item.name)) {
+            seen.add(item.name)
+            merged.push(item)
+          }
+        }
+        const ordered = rankItems(merged, query)
+        if (exact) {
+          const index = ordered.findIndex((item) => item.name === exact.name)
+          if (index > 0) ordered.unshift(ordered.splice(index, 1)[0])
+        }
+        return ordered
+      }
+
       /** 名字真的包含查询词、且看起来是 DSH 插件的那些。 */
       const nameHits = plain.items.filter(
         (item) => item.name.toLowerCase().includes(needle) && isDshLike(item),
       )
-      if (nameHits.length > 0) {
-        const merged = []
-        const seen = new Set()
-        for (const item of plain.items.filter((entry) => entry.keywords.includes(DSH_KEYWORD))) {
-          if (!seen.has(item.name)) {
-            seen.add(item.name)
-            merged.push(item)
-          }
-        }
-        for (const item of nameHits) {
-          if (!seen.has(item.name)) {
-            seen.add(item.name)
-            merged.push(item)
-          }
-        }
-        return { total: merged.length, items: rankItems(merged, query), mode: 'name' }
+      if (nameHits.length > 0 || exact) {
+        const base = plain.items.filter((entry) => entry.keywords.includes(DSH_KEYWORD))
+        const items = compose([...base, ...nameHits])
+        return { total: items.length, items, mode: 'name' }
       }
 
       /** 名字没命中时，退一步找「描述或关键词里提到它」的 DSH 插件。 */
@@ -834,7 +877,9 @@ window.__ModuleLoader__.load({
           h('code', { style: styles.code }, 'pet'),
           ' 或 ',
           h('code', { style: styles.code }, 'cost'),
-          '），在 npm 上检索 DSH 插件；点「安装」直接走插件页内置的安装流程。',
+          '），也可以直接贴完整包名（比如 ',
+          h('code', { style: styles.code }, 'qubitclient-dsh-panel'),
+          '）；点「安装」直接走插件页内置的安装流程。',
         ),
         h(
           'p',
@@ -888,7 +933,9 @@ window.__ModuleLoader__.load({
           : mode === 'short'
             ? '至少输入 2 个字符'
             : mode === 'name'
-              ? `名字包含「${query}」的 DSH 插件 ${total} 个`
+              ? items.some((item) => item.name.toLowerCase() === query.toLowerCase())
+                ? `找到了「${query}」${total > 1 ? `，以及名字相关的 ${total - 1} 个插件` : ''}`
+                : `名字包含「${query}」的 DSH 插件 ${total} 个`
               : mode === 'text'
                 ? `名称没命中「${query}」，下面是描述/关键词提到它的 ${total} 个插件`
                 : `没有 DSH 插件匹配「${query}」`

@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-search",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Search DSH plugins on the npm registry by a name fragment and install them from the Plugins page.",
   "author": "yaqiangsun",
   "license": "MIT",

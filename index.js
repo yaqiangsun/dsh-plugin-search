@@ -64,6 +64,36 @@ async function fetchSearch(text, size, signal) {
   }
 }
 
+/** npm 包名格式（含 scoped），用来判断用户是不是直接敲了完整包名。 */
+const PACKAGE_NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i
+
+/**
+ * 按完整包名精确查一次 `/<name>/latest`。
+ *
+ * npm 搜索是「整词匹配 + 相关性排序」：输入 `qubitclient-dsh-panel` 这种三词包名时，
+ * 搜索接口会把 dsh / panel 这些常见词的其他包排到前面，目标包反而被挤出前 30 条。
+ * 所以**完整包名必须直接打 registry**，不能只靠搜索接口。
+ */
+async function fetchExactPackage(name, signal) {
+  if (!PACKAGE_NAME_RE.test(name)) return null
+  try {
+    const encoded = name.replace('/', '%2f')
+    const data = await fetchJson(`${REGISTRY}/${encoded}/latest`, signal)
+    if (!data || typeof data.name !== 'string') return null
+    const maintainer = Array.isArray(data.maintainers) ? data.maintainers[0] : null
+    return {
+      name: data.name,
+      version: typeof data.version === 'string' ? data.version : '',
+      description: typeof data.description === 'string' ? data.description : '',
+      date: '',
+      keywords: Array.isArray(data.keywords) ? data.keywords.map(String) : [],
+      publisher: typeof maintainer?.name === 'string' ? maintainer.name : '',
+    }
+  } catch (_error) {
+    return null
+  }
+}
+
 /**
  * npm 搜索：把 DSH 社区插件按查询词相关性排好序。
  *
@@ -82,12 +112,13 @@ async function searchRegistry(query, size, signal) {
     return { total: page.total, items: page.items, mode: 'browse' }
   }
 
-  const [plain, scoped] = await Promise.all([
+  const [plain, scoped, exact] = await Promise.all([
     fetchSearch(query, FULLTEXT_SIZE, signal),
     fetchSearch(`keywords:${DSH_KEYWORD} ${query}`, FULLTEXT_SIZE, signal).catch(() => ({
       total: 0,
       items: [],
     })),
+    fetchExactPackage(query, signal).catch(() => null),
   ])
 
   const needle = query.toLowerCase()
@@ -96,25 +127,35 @@ async function searchRegistry(query, size, signal) {
     item.keywords.includes('deepseek-harness') ||
     item.name.toLowerCase().includes('dsh')
 
+  /** 精确命中的包永远排第一，其余去重后按相关性排。 */
+  const compose = (base) => {
+    const merged = []
+    const seen = new Set()
+    if (exact) {
+      seen.add(exact.name)
+      merged.push(exact)
+    }
+    for (const item of base) {
+      if (!seen.has(item.name)) {
+        seen.add(item.name)
+        merged.push(item)
+      }
+    }
+    const ordered = rankItems(merged, query)
+    if (exact) {
+      const index = ordered.findIndex((item) => item.name === exact.name)
+      if (index > 0) ordered.unshift(ordered.splice(index, 1)[0])
+    }
+    return ordered
+  }
+
   const nameHits = plain.items.filter(
     (item) => item.name.toLowerCase().includes(needle) && isDshLike(item),
   )
-  if (nameHits.length > 0) {
-    const merged = []
-    const seen = new Set()
-    for (const item of plain.items.filter((entry) => entry.keywords.includes(DSH_KEYWORD))) {
-      if (!seen.has(item.name)) {
-        seen.add(item.name)
-        merged.push(item)
-      }
-    }
-    for (const item of nameHits) {
-      if (!seen.has(item.name)) {
-        seen.add(item.name)
-        merged.push(item)
-      }
-    }
-    return { total: merged.length, items: rankItems(merged, query), mode: 'name' }
+  if (nameHits.length > 0 || exact) {
+    const base = plain.items.filter((entry) => entry.keywords.includes(DSH_KEYWORD))
+    const items = compose([...base, ...nameHits])
+    return { total: items.length, items, mode: 'name' }
   }
 
   const textHits = scoped.items.filter((item) => {
