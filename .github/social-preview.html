@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; width: 1280px; height: 630px; overflow: hidden; }
+      body {
+        display: flex;
+        align-items: center;
+        gap: 56px;
+        padding: 0 96px;
+        font-family: "Segoe UI", Inter, system-ui, sans-serif;
+        color: #f5f7ff;
+        background: radial-gradient(circle at 18% 20%, #2b3a8f 0%, #141a33 48%, #0b0e1a 100%);
+      }
+      .glow {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(circle at 82% 78%, rgba(79, 107, 237, 0.35), transparent 55%);
+      }
+      .icon { position: relative; width: 200px; height: 200px; flex: 0 0 auto; filter: drop-shadow(0 18px 40px rgba(79, 107, 237, 0.55)); }
+      .text { position: relative; }
+      .name { font-size: 78px; font-weight: 700; letter-spacing: -2px; line-height: 1.05; }
+      .tag { margin-top: 18px; font-size: 30px; color: #b9c4ea; line-height: 1.4; }
+      .meta { margin-top: 34px; display: flex; gap: 14px; font-size: 20px; color: #8f9bc7; }
+      .chip { padding: 7px 16px; border: 1px solid rgba(185, 196, 234, 0.35); border-radius: 999px; }
+      .accent { height: 6px; width: 132px; margin-top: 30px; border-radius: 999px; background: linear-gradient(90deg, #4f6bed, #8f6bff); }
+    </style>
+  </head>
+  <body>
+    <div class="glow"></div>
+    <img class="icon" src="../icon.svg" alt="" />
+    <div class="text">
+      <div class="name">dsh-plugin-search</div>
+      <div class="tag">Search DSH plugins on npm.<br />Install them from the Plugins page.</div>
+      <div class="accent"></div>
+      <div class="meta">
+        <span class="chip">npm</span>
+        <span class="chip">DeepSeek Harness</span>
+        <span class="chip">MIT</span>
+      </div>
+    </div>
+  </body>
+</html>
