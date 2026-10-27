@@ -19,9 +19,13 @@ export const name = 'dsh-plugin-search'
 export const inject = ['tools']
 
 const REGISTRY = 'https://registry.npmjs.org'
+/** npm 下载统计接口：搜索响应里没有的包（例如完整包名直查 registry 时）单独问一次。 */
+const DOWNLOADS_API = 'https://api.npmjs.org'
 /** npm 上 DSH 插件社区的约定关键词；用它把搜索范围收敛到 DSH 插件。 */
 const DSH_KEYWORD = 'dsh-plugin'
 const REQUEST_TIMEOUT_MS = 15000
+/** 下载统计是锦上添花，读不到就早点放手，不拖慢检索。 */
+const DOWNLOADS_TIMEOUT_MS = 5000
 /** 工具一次最多校验多少个包（每个包要额外请求一次 metadata）。 */
 const MAX_PROBE = 12
 
@@ -37,6 +41,48 @@ async function fetchJson(url, signal) {
   return response.json()
 }
 
+/**
+ * 完整包名直查 registry 只拿得到元信息；下载量优先用搜索结果里同名包的数据补上，
+ * 这样既准确又不用多打一次下载统计接口（下载接口读不到时退回 0）。
+ */
+function withDownloadsFromSearch(exact, ...pages) {
+  if (!exact) return null
+  const found = pages.flat().find((item) => item.name === exact.name)
+  return {
+    ...exact,
+    downloadsWeekly: exact.downloadsWeekly || found?.downloadsWeekly || 0,
+    downloadsMonthly: exact.downloadsMonthly || found?.downloadsMonthly || 0,
+  }
+}
+
+/** npm 搜索响应里的下载量：`downloads.weekly` / `downloads.monthly`，缺失按 0 处理。 */
+function downloadsOf(object) {
+  const downloads = object?.downloads ?? {}
+  return {
+    weekly: typeof downloads.weekly === 'number' && downloads.weekly > 0 ? downloads.weekly : 0,
+    monthly: typeof downloads.monthly === 'number' && downloads.monthly > 0 ? downloads.monthly : 0,
+  }
+}
+
+/**
+ * 查某个包近一周的 npm 下载量。
+ *
+ * npm 搜索响应自带 downloads 字段，但完整包名是直查 `/<包名>/latest` 的，那里没有
+ * 下载量；只能再问一次 api.npmjs.org。新包还没聚合时接口会 404，读不到按 0 处理。
+ */
+async function fetchWeeklyDownloads(name) {
+  const timeout = withTimeout(DOWNLOADS_TIMEOUT_MS)
+  try {
+    const encoded = name.replace('/', '%2f')
+    const data = await fetchJson(`${DOWNLOADS_API}/downloads/point/last-week/${encoded}`, timeout.signal)
+    return typeof data?.downloads === 'number' && data.downloads > 0 ? data.downloads : 0
+  } catch (_error) {
+    return 0
+  } finally {
+    timeout.done()
+  }
+}
+
 /** 普通全文检索每页条数；关键词检索沿用同一个窗口。 */
 const FULLTEXT_SIZE = 30
 /** npm 搜索接口的硬限制：2..64 个字符。 */
@@ -44,6 +90,7 @@ const MAX_QUERY = 64
 
 function toItem(object) {
   const pkg = object?.package ?? {}
+  const downloads = downloadsOf(object)
   return {
     name: typeof pkg.name === 'string' ? pkg.name : '',
     version: typeof pkg.version === 'string' ? pkg.version : '',
@@ -51,6 +98,8 @@ function toItem(object) {
     date: typeof pkg.date === 'string' ? pkg.date : '',
     keywords: Array.isArray(pkg.keywords) ? pkg.keywords.map(String) : [],
     publisher: typeof pkg.publisher?.username === 'string' ? pkg.publisher.username : '',
+    downloadsWeekly: downloads.weekly,
+    downloadsMonthly: downloads.monthly,
   }
 }
 
@@ -78,7 +127,10 @@ async function fetchExactPackage(name, signal) {
   if (!PACKAGE_NAME_RE.test(name)) return null
   try {
     const encoded = name.replace('/', '%2f')
-    const data = await fetchJson(`${REGISTRY}/${encoded}/latest`, signal)
+    const [data, weekly] = await Promise.all([
+      fetchJson(`${REGISTRY}/${encoded}/latest`, signal),
+      fetchWeeklyDownloads(name),
+    ])
     if (!data || typeof data.name !== 'string') return null
     const maintainer = Array.isArray(data.maintainers) ? data.maintainers[0] : null
     return {
@@ -88,6 +140,8 @@ async function fetchExactPackage(name, signal) {
       date: '',
       keywords: Array.isArray(data.keywords) ? data.keywords.map(String) : [],
       publisher: typeof maintainer?.name === 'string' ? maintainer.name : '',
+      downloadsWeekly: weekly,
+      downloadsMonthly: 0,
     }
   } catch (_error) {
     return null
@@ -112,7 +166,7 @@ async function searchRegistry(query, size, signal) {
     return { total: page.total, items: page.items, mode: 'browse' }
   }
 
-  const [plain, scoped, exact] = await Promise.all([
+  const [plain, scoped, exactPackage] = await Promise.all([
     fetchSearch(query, FULLTEXT_SIZE, signal),
     fetchSearch(`keywords:${DSH_KEYWORD} ${query}`, FULLTEXT_SIZE, signal).catch(() => ({
       total: 0,
@@ -120,6 +174,7 @@ async function searchRegistry(query, size, signal) {
     })),
     fetchExactPackage(query, signal).catch(() => null),
   ])
+  const exact = withDownloadsFromSearch(exactPackage, plain.items, scoped.items)
 
   const needle = query.toLowerCase()
   const isDshLike = (item) =>
@@ -253,11 +308,22 @@ function rankItems(items, query) {
     .map((entry) => entry.item)
 }
 
+/** 下载量的紧凑写法（9.4万 / 1.2k）；0 表示 npm 还没给出数据，显示成「—」。 */
+function formatCount(value) {
+  if (!Number.isFinite(value) || value <= 0) return '—'
+  try {
+    return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(value)
+  } catch (_error) {
+    return String(value)
+  }
+}
+
 const PLUGIN_SEARCH_TOOL = {
   name: 'plugin_search',
   description:
     'Search the npm registry for DeepSeek Harness (DSH) plugins by a name fragment. ' +
-    'Returns matching packages with version, description, publisher and whether the package is an ' +
+    'Returns matching packages with version, description, publisher, weekly/monthly npm download counts, ' +
+    'and whether the package is an ' +
     'installable bundle (declares dsh.bundle.patch). Use it when the user asks to find or install a DSH plugin. ' +
     'The same search is available to the user in the Plugins page tab "搜索"; installation is done by the user ' +
     'through the built-in install dialog, not by this tool.',
@@ -301,11 +367,29 @@ const PLUGIN_SEARCH_TOOL = {
               version: { type: 'string' },
               description: { type: 'string' },
               publisher: { type: 'string' },
+              downloadsWeekly: {
+                type: 'number',
+                description: 'npm downloads in the last week; 0 when npm has no data yet.',
+              },
+              downloadsMonthly: {
+                type: 'number',
+                description: 'npm downloads in the last month; 0 when npm has no data yet.',
+              },
               installable: { type: 'boolean' },
               hasClient: { type: 'boolean' },
               error: { type: 'string' },
             },
-            required: ['name', 'version', 'description', 'publisher', 'installable', 'hasClient', 'error'],
+            required: [
+              'name',
+              'version',
+              'description',
+              'publisher',
+              'downloadsWeekly',
+              'downloadsMonthly',
+              'installable',
+              'hasClient',
+              'error',
+            ],
             additionalProperties: false,
           },
         },
@@ -340,8 +424,9 @@ const PLUGIN_SEARCH_TOOL = {
       }
       const lines = value.packages.map((pkg) => {
         const flags = [pkg.installable ? '可安装' : '非组合包', pkg.hasClient ? '含界面' : '仅 Host']
+        const weekly = formatCount(pkg.downloadsWeekly)
         const reason = pkg.error ? ` | 校验失败: ${pkg.error}` : ''
-        return `- ${pkg.name}@${pkg.version || '?'} | ${flags.join(' / ')} | ${pkg.publisher || '-'}\n  ${pkg.description}${reason}`
+        return `- ${pkg.name}@${pkg.version || '?'} | ${flags.join(' / ')} | 周下载 ${weekly} | ${pkg.publisher || '-'}\n  ${pkg.description}${reason}`
       })
       const header =
         value.mode === 'browse'
@@ -380,15 +465,20 @@ const PLUGIN_SEARCH_TOOL = {
       const found = await searchRegistry(query.slice(0, MAX_QUERY), Math.max(limit, Math.min(30, limit * 2)), timeout.signal)
       const ordered = rankItems(found.items, query)
       const probed = await mapLimit(ordered.slice(0, limit), 4, (item) => probePackage(item.name))
-      const packages = probed.map((probe) => ({
-        name: probe.name,
-        version: probe.version,
-        description: probe.description,
-        publisher: ordered.find((item) => item.name === probe.name)?.publisher ?? '',
-        installable: probe.installable,
-        hasClient: probe.hasClient,
-        error: probe.error,
-      }))
+      const packages = probed.map((probe) => {
+        const origin = ordered.find((item) => item.name === probe.name)
+        return {
+          name: probe.name,
+          version: probe.version,
+          description: probe.description,
+          publisher: origin?.publisher ?? '',
+          downloadsWeekly: origin?.downloadsWeekly ?? 0,
+          downloadsMonthly: origin?.downloadsMonthly ?? 0,
+          installable: probe.installable,
+          hasClient: probe.hasClient,
+          error: probe.error,
+        }
+      })
       return {
         ok: true,
         query,

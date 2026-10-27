@@ -25,6 +25,8 @@ window.__ModuleLoader__.load({
     const h = React.createElement
 
     const REGISTRY = 'https://registry.npmjs.org'
+    /** npm 下载统计接口：完整包名直查 registry 时，搜索结果里没有 downloads 字段。 */
+    const DOWNLOADS_API = 'https://api.npmjs.org'
     /** npm 上 DSH 插件社区的约定关键词；用它把搜索范围收敛到 DSH 插件。 */
     const DSH_KEYWORD = 'dsh-plugin'
     /** 每页拉多少条搜索结果。 */
@@ -38,6 +40,8 @@ window.__ModuleLoader__.load({
     const FETCH_TIMEOUT_MS = 15000
     /** 元信息校验比搜索更“可失败”：读不到就早点放手，别让「校验中」挂太久。 */
     const META_TIMEOUT_MS = 8000
+    /** 下载统计是锦上添花：读不到就按 0 处理，不拖慢检索。 */
+    const DOWNLOADS_TIMEOUT_MS = 5000
 
     // ---- 网络小工具 --------------------------------------------------------
 
@@ -68,6 +72,51 @@ window.__ModuleLoader__.load({
       return results
     }
 
+    /**
+     * 完整包名直查 registry 只拿得到元信息；下载量优先用搜索结果里同名包的数据补上，
+     * 这样既准确又不用多打一次下载统计接口（下载接口读不到时退回 0）。
+     */
+    function withDownloadsFromSearch(exact, ...pages) {
+      if (!exact) return null
+      const found = pages.flat().find((item) => item.name === exact.name)
+      return {
+        ...exact,
+        downloadsWeekly: exact.downloadsWeekly || found?.downloadsWeekly || 0,
+        downloadsMonthly: exact.downloadsMonthly || found?.downloadsMonthly || 0,
+      }
+    }
+
+    /** npm 搜索响应里的下载量：`downloads.weekly` / `downloads.monthly`，缺失按 0 处理。 */
+    function downloadsOf(object) {
+      const downloads = object?.downloads ?? {}
+      return {
+        weekly: typeof downloads.weekly === 'number' && downloads.weekly > 0 ? downloads.weekly : 0,
+        monthly: typeof downloads.monthly === 'number' && downloads.monthly > 0 ? downloads.monthly : 0,
+      }
+    }
+
+    /**
+     * 查某个包近一周的 npm 下载量（api.npmjs.org 对浏览器开放 CORS）。
+     *
+     * 完整包名是直查 `/<包名>/latest` 的，那个接口不带下载量，只能单独问一次；
+     * 新包还没聚合时接口会 404，读不到按 0 处理，不影响列表。
+     */
+    async function fetchWeeklyDownloads(name) {
+      const timeout = createTimeoutSignal(DOWNLOADS_TIMEOUT_MS)
+      try {
+        const encoded = name.replace('/', '%2f')
+        const data = await fetchJson(
+          `${DOWNLOADS_API}/downloads/point/last-week/${encoded}`,
+          timeout.signal,
+        )
+        return typeof data?.downloads === 'number' && data.downloads > 0 ? data.downloads : 0
+      } catch (_error) {
+        return 0
+      } finally {
+        timeout.done()
+      }
+    }
+
     // ---- npm 检索 ----------------------------------------------------------
 
     /** 普通全文检索每页条数；关键词检索沿用 PAGE_SIZE。 */
@@ -76,6 +125,7 @@ window.__ModuleLoader__.load({
     /** npm 搜索返回的原始结果 → 列表项。 */
     function toItem(object) {
       const pkg = object?.package ?? {}
+      const downloads = downloadsOf(object)
       return {
         name: typeof pkg.name === 'string' ? pkg.name : '',
         version: typeof pkg.version === 'string' ? pkg.version : '',
@@ -83,6 +133,8 @@ window.__ModuleLoader__.load({
         date: typeof pkg.date === 'string' ? pkg.date : '',
         keywords: Array.isArray(pkg.keywords) ? pkg.keywords.map(String) : [],
         publisher: typeof pkg.publisher?.username === 'string' ? pkg.publisher.username : '',
+        downloadsWeekly: downloads.weekly,
+        downloadsMonthly: downloads.monthly,
         score: typeof object?.score?.final === 'number' ? object.score.final : 0,
         npmUrl:
           typeof pkg.links?.npm === 'string'
@@ -119,7 +171,10 @@ window.__ModuleLoader__.load({
       if (!PACKAGE_NAME_RE.test(name)) return null
       try {
         const encoded = name.replace('/', '%2f')
-        const data = await fetchJson(`${REGISTRY}/${encoded}/latest`, signal)
+        const [data, weekly] = await Promise.all([
+          fetchJson(`${REGISTRY}/${encoded}/latest`, signal),
+          fetchWeeklyDownloads(name),
+        ])
         if (!data || typeof data.name !== 'string') return null
         const maintainer = Array.isArray(data.maintainers) ? data.maintainers[0] : null
         return {
@@ -129,6 +184,8 @@ window.__ModuleLoader__.load({
           date: '',
           keywords: Array.isArray(data.keywords) ? data.keywords.map(String) : [],
           publisher: typeof maintainer?.name === 'string' ? maintainer.name : '',
+          downloadsWeekly: weekly,
+          downloadsMonthly: 0,
           score: 0,
           npmUrl: `https://www.npmjs.com/package/${data.name}`,
         }
@@ -158,7 +215,7 @@ window.__ModuleLoader__.load({
         return { total: page.total, items: rankItems(page.items, ''), mode: 'browse' }
       }
 
-      const [plain, scoped, exact] = await Promise.all([
+      const [plain, scoped, exactPackage] = await Promise.all([
         fetchSearch(query, FULLTEXT_SIZE, 0, signal),
         fetchSearch(`keywords:${DSH_KEYWORD} ${query}`, PAGE_SIZE, 0, signal).catch(() => ({
           total: 0,
@@ -166,6 +223,7 @@ window.__ModuleLoader__.load({
         })),
         fetchExactPackage(query, signal).catch(() => null),
       ])
+      const exact = withDownloadsFromSearch(exactPackage, plain.items, scoped.items)
 
       const needle = query.toLowerCase()
       const isDshLike = (item) =>
@@ -547,6 +605,28 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** 下载量的紧凑写法（9.4万 / 1.2k）；0 表示 npm 还没给出数据，不显示。 */
+    function formatCount(value) {
+      if (!Number.isFinite(value) || value <= 0) return ''
+      try {
+        return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(
+          value,
+        )
+      } catch (_error) {
+        return String(value)
+      }
+    }
+
+    /** 悬停提示里的精确数字（千分位）。 */
+    function formatExact(value) {
+      if (!Number.isFinite(value) || value <= 0) return ''
+      try {
+        return value.toLocaleString('zh-CN')
+      } catch (_error) {
+        return String(value)
+      }
+    }
+
     function Badge(props) {
       return h(
         'span',
@@ -636,6 +716,26 @@ window.__ModuleLoader__.load({
         .filter((keyword) => keyword !== 'dsh' && keyword !== DSH_KEYWORD && keyword !== 'deepseek-harness')
         .slice(0, 3)
         .join(' · ')
+      const weeklyText = formatCount(item.downloadsWeekly)
+      const monthlyText = formatExact(item.downloadsMonthly)
+      const downloadsTitle =
+        item.downloadsWeekly > 0
+          ? `近一周 npm 下载 ${formatExact(item.downloadsWeekly)} 次` +
+            (monthlyText ? `，近一个月 ${monthlyText} 次` : '')
+          : 'npm 还没给出下载统计（包刚发布或数据未聚合）'
+
+      /** 卡片底部一行元信息：作者 · 发布时间 · 周下载 · 关键词，用「·」隔着。 */
+      const metaNodes = []
+      const pushMeta = (key, text, title) => {
+        if (metaNodes.length > 0) {
+          metaNodes.push(h('span', { key: `dot-${key}`, style: styles.dot }, '·'))
+        }
+        metaNodes.push(title ? h('span', { key, title }, text) : h('span', { key }, text))
+      }
+      if (item.publisher) pushMeta('publisher', item.publisher)
+      if (published) pushMeta('published', published)
+      if (weeklyText) pushMeta('downloads', `周下载 ${weeklyText}`, downloadsTitle)
+      if (keywordText) pushMeta('keywords', keywordText)
 
       return h(
         'div',
@@ -651,15 +751,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: styles.cardFoot },
-          h(
-            'div',
-            { style: styles.footMeta },
-            item.publisher ? h('span', null, item.publisher) : null,
-            published ? h('span', { style: styles.dot }, '·') : null,
-            published ? h('span', null, published) : null,
-            keywordText ? h('span', { style: styles.dot }, '·') : null,
-            keywordText ? h('span', null, keywordText) : null,
-          ),
+          h('div', { style: styles.footMeta }, ...metaNodes),
           h(
             'div',
             { style: styles.actions },

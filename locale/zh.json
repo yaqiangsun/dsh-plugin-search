@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "插件搜索",
-    "description": "在 npm 上按名字片段搜索 DSH 插件，一键打开安装对话框。"
+    "description": "在 npm 上按名字片段搜索 DSH 插件，显示周下载量，一键打开安装对话框。"
   }
 }

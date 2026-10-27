@@ -72,6 +72,7 @@ if (Array.isArray(hostModule.inject)) ok(`Host 半 inject: ${hostModule.inject.j
 else bad('Host 半缺少 inject 数组')
 
 const registered = []
+let packageSchema
 const fakeCtx = {
   tools: { register: (def) => registered.push(def) },
   effect: (fn) => fn(),
@@ -85,6 +86,15 @@ try {
       ? ok(`工具 ${def.name} 形状完整（name/description/parameters/output.render）`)
       : bad(`工具 ${def.name ?? '?'} 形状不完整`)
   }
+  packageSchema = registered[0]?.output?.schema?.properties?.packages?.items
+  for (const field of ['downloadsWeekly', 'downloadsMonthly']) {
+    packageSchema?.properties?.[field]
+      ? ok(`工具输出 schema 有 ${field}`)
+      : bad(`工具输出 schema 缺少 ${field}`)
+    packageSchema?.required?.includes(field)
+      ? ok(`工具输出 required 含 ${field}`)
+      : bad(`工具输出 required 缺少 ${field}`)
+  }
 } catch (error) {
   bad(`Host 半 apply() 抛错: ${error.message}`)
 }
@@ -93,6 +103,9 @@ try {
 const clientTarget = manifest.dsh?.client ? manifest.exports['./client'] : undefined
 if (clientTarget) {
   const source = fs.readFileSync(path.join(pkgDir, clientTarget), 'utf8')
+  source.includes('downloadsWeekly') && source.includes('周下载')
+    ? ok('client 半有周下载量渲染')
+    : bad('client 半缺少周下载量渲染')
   let loaded
   const noop = () => {}
   const React = {
@@ -193,8 +206,19 @@ if (network) {
       const result = await tool.execute({ query: 'pet', limit: 3 })
       result.ok || bad(`Host 工具执行失败: ${result.error}`)
       result.ok && ok(`Host 工具网络检索可用：total=${result.total}，返回 ${result.packages.length} 个包`)
+      const required = packageSchema?.required ?? []
       for (const pkg of result.packages) {
-        ok(`  ${pkg.name}@${pkg.version} installable=${pkg.installable} hasClient=${pkg.hasClient}`)
+        const missing = required.filter((key) => !(key in pkg))
+        ok(
+          `  ${pkg.name}@${pkg.version} installable=${pkg.installable} hasClient=${pkg.hasClient} ` +
+            `周下载=${pkg.downloadsWeekly} 月下载=${pkg.downloadsMonthly}`,
+        )
+        typeof pkg.downloadsWeekly === 'number' && typeof pkg.downloadsMonthly === 'number'
+          ? ok(`  ${pkg.name} 下载量字段是数字`)
+          : bad(`  ${pkg.name} 下载量字段不是数字`)
+        missing.length === 0
+          ? ok(`  ${pkg.name} 输出含 schema 要求的全部字段`)
+          : bad(`  ${pkg.name} 输出缺少字段: ${missing.join(', ')}`)
       }
     } catch (error) {
       bad(`Host 工具网络验证抛错: ${error.message}`)
