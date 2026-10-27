@@ -199,9 +199,21 @@ window.__ModuleLoader__.load({
       const nameHits = plain.items.filter(
         (item) => item.name.toLowerCase().includes(needle) && isDshLike(item),
       )
+      /**
+       * 「相关」补充项必须自己真的提到查询词（名字/关键词/描述），
+       * 不能因为「搜索接口把它排前面」就收进来 —— npm 的全文检索会命中 README，
+       * 那样会冒出名字、描述里都没有该词的结果，列表上方的说明就成了假话。
+       */
+      const mentionsNeedle = (item) =>
+        item.name.toLowerCase().includes(needle) ||
+        item.keywords.some((keyword) => keyword.toLowerCase().includes(needle)) ||
+        (item.description || '').toLowerCase().includes(needle)
+
       if (nameHits.length > 0 || exact) {
-        const base = plain.items.filter((entry) => entry.keywords.includes(DSH_KEYWORD))
-        const items = compose([...base, ...nameHits])
+        const related = plain.items.filter(
+          (item) => isDshLike(item) && mentionsNeedle(item) && !nameHits.includes(item),
+        )
+        const items = compose([...nameHits, ...related])
         return { total: items.length, items, mode: 'name' }
       }
 
@@ -933,9 +945,15 @@ window.__ModuleLoader__.load({
           : mode === 'short'
             ? '至少输入 2 个字符'
             : mode === 'name'
-              ? items.some((item) => item.name.toLowerCase() === query.toLowerCase())
-                ? `找到了「${query}」${total > 1 ? `，以及名字相关的 ${total - 1} 个插件` : ''}`
-                : `名字包含「${query}」的 DSH 插件 ${total} 个`
+              ? (() => {
+                  const lower = query.toLowerCase()
+                  const nameCount = items.filter((item) => item.name.toLowerCase().includes(lower)).length
+                  const relatedCount = total - nameCount
+                  const head = items.some((item) => item.name.toLowerCase() === lower)
+                    ? `找到了「${query}」`
+                    : `名字包含「${query}」的 DSH 插件 ${nameCount} 个`
+                  return relatedCount > 0 ? `${head}，另有 ${relatedCount} 个描述/关键词提到它` : head
+                })()
               : mode === 'text'
                 ? `名称没命中「${query}」，下面是描述/关键词提到它的 ${total} 个插件`
                 : `没有 DSH 插件匹配「${query}」`

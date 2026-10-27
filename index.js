@@ -152,9 +152,21 @@ async function searchRegistry(query, size, signal) {
   const nameHits = plain.items.filter(
     (item) => item.name.toLowerCase().includes(needle) && isDshLike(item),
   )
+  /**
+   * 「相关」补充项必须自己真的提到查询词（名字/关键词/描述）。
+   * npm 全文检索会命中 README，光靠搜索排名会把名字、描述都没有该词的包带进来，
+   * 那样工具输出里的「名字包含」就成了假话。
+   */
+  const mentionsNeedle = (item) =>
+    item.name.toLowerCase().includes(needle) ||
+    item.keywords.some((keyword) => keyword.toLowerCase().includes(needle)) ||
+    (item.description || '').toLowerCase().includes(needle)
+
   if (nameHits.length > 0 || exact) {
-    const base = plain.items.filter((entry) => entry.keywords.includes(DSH_KEYWORD))
-    const items = compose([...base, ...nameHits])
+    const related = plain.items.filter(
+      (item) => isDshLike(item) && mentionsNeedle(item) && !nameHits.includes(item),
+    )
+    const items = compose([...nameHits, ...related])
     return { total: items.length, items, mode: 'name' }
   }
 
@@ -336,7 +348,18 @@ const PLUGIN_SEARCH_TOOL = {
           ? `npm 共 ${value.total} 个 DSH 插件（关键词 dsh-plugin）`
           : value.mode === 'text'
             ? `名称没命中「${value.query}」，描述/关键词提到它的 DSH 插件 ${value.total} 个，显示 ${value.packages.length} 个`
-            : `名字包含「${value.query}」的 DSH 插件共 ${value.total} 个，显示 ${value.packages.length} 个`
+            : (() => {
+                const lower = value.query.toLowerCase()
+                const nameCount = value.packages.filter((pkg) =>
+                  pkg.name.toLowerCase().includes(lower),
+                ).length
+                const exactHit = value.packages.some((pkg) => pkg.name.toLowerCase() === lower)
+                const head = exactHit
+                  ? `找到了「${value.query}」`
+                  : `名字包含「${value.query}」的 DSH 插件 ${nameCount} 个`
+                const related = value.packages.length - nameCount
+                return `${head}${related > 0 ? `，另有 ${related} 个相关` : ''}；共 ${value.total} 个匹配，显示 ${value.packages.length} 个`
+              })()
       return [
         {
           type: 'text',
