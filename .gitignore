@@ -1,0 +1,31 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 打包产物
+*.tgz
+*.tar.gz
+dist/
+coverage/
+
+# 本地自测环境（不装 DSH 时用的临时 profile / 截图）
+.verify-home/
+verify-shots/
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+pnpm-debug.log*
+*.tmp
+
+# 编辑器与操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+
+# 备份文件
+*.bak
+*.bak-*

@@ -1,0 +1,19 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 结构与清单自检（不安装、不联网）
+        run: node scripts/check-plugin.mjs
+      - name: 搜索插件专项自检（Host 半 / Client 半）
+        run: node scripts/check-search-plugin.mjs

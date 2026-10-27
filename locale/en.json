@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Plugin Search",
+    "description": "Search DSH plugins on npm by a name fragment and install them in one click."
+  }
+}

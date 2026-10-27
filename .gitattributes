@@ -1,0 +1,9 @@
+# 统一换行符：仓库内一律 LF，Windows 检出时也保持 LF（避免脚本/JSON 出现混合换行）
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.tgz binary
