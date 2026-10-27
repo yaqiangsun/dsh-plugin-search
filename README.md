@@ -1,4 +1,16 @@
-# dsh-plugin-search
+<p align="center">
+  <img src="./icon.svg" width="96" height="96" alt="dsh-plugin-search 图标" />
+</p>
+
+<h1 align="center">dsh-plugin-search</h1>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/dsh-plugin-search"><img alt="npm 版本" src="https://img.shields.io/npm/v/dsh-plugin-search.svg" /></a>
+  <a href="https://www.npmjs.com/package/dsh-plugin-search"><img alt="npm 下载量" src="https://img.shields.io/npm/dm/dsh-plugin-search.svg" /></a>
+  <a href="https://github.com/yaqiangsun/dsh-plugin-search/actions/workflows/check.yml"><img alt="自检状态" src="https://github.com/yaqiangsun/dsh-plugin-search/actions/workflows/check.yml/badge.svg" /></a>
+  <a href="./LICENSE"><img alt="许可证" src="https://img.shields.io/npm/l/dsh-plugin-search.svg" /></a>
+  <a href="https://www.npmjs.com/package/dsh-plugin-search"><img alt="DSH 插件" src="https://img.shields.io/badge/DSH-plugin-4f6bed.svg" /></a>
+</p>
 
 在 DeepSeek Harness（DSH）里搜索 npm 上的 DSH 插件，并一键走内置安装流程。
 
